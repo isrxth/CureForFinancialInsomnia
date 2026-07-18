@@ -20,7 +20,7 @@ export function FileUploader({ onUpload, loading, error, activeFileName }: FileU
 
 
 return (
-    <Card className="border-dashed border-2 bg-slate-50/50 transition-all hover:bg-slate-50">
+    <Card className="border-dashed border-2 bg-slate-50/50 dark:bg-slate-900/50 hover:bg-slate-50 dark:hover:bg-slate-900 transition-all border-slate-200 dark:border-slate-800">
       <CardContent className="flex flex-col items-center justify-center p-10 text-center space-y-4">
         <div className="space-y-2 text-sm text-muted-foreground">
           <label htmlFor="pdf-upload" className="relative cursor-pointer font-medium">
@@ -29,6 +29,7 @@ return (
               type="button" 
               disabled={loading} 
               onClick={() => document.getElementById("pdf-upload")?.click()}
+              className="hover:scale-[1.02] active:scale-[0.98] transition-all duration-200"
             >
               {loading ? "Parsing Data Pipeline..." : "Select Annual Report PDF"}
             </Button>
@@ -44,7 +45,7 @@ return (
         </div>
         
         {activeFileName && (
-          <p className="text-xs font-medium text-slate-600 animate-pulse">
+          <p className="text-xs font-medium text-slate-600 dark:text-slate-400 animate-pulse">
             Active Target: {activeFileName}
           </p>
         )}

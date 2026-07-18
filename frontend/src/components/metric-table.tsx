@@ -25,14 +25,14 @@ export function MetricTable({ data, headers }: MetricTableProps) {
     };
 
     return (
-    <div className="rounded-md border overflow-x-auto bg-white shadow-sm">
+    <div className="rounded-md border dark:border-slate-800 overflow-x-auto bg-white dark:bg-slate-900 shadow-sm">
       <Table>
         <TableHeader>
-          <TableRow className="bg-slate-50 hover:bg-slate-50">
+          <TableRow className="bg-slate-50 dark:bg-slate-950 hover:bg-slate-50 dark:hover:bg-slate-950 border-b dark:border-slate-800">
             {headers.map((h) => (
               <TableHead 
                 key={h.key} 
-                className={`font-bold text-slate-900 ${h.key === "Year" ? "w-[120px]" : "text-right"}`}
+                className={`font-bold text-slate-900 dark:text-slate-100 ${h.key === "Year" ? "w-[120px]" : "text-right"}`}
               >
                 {h.label}
               </TableHead>
@@ -41,13 +41,13 @@ export function MetricTable({ data, headers }: MetricTableProps) {
         </TableHeader>
         <TableBody>
           {data.map((row, index) => (
-            <TableRow key={row.Year || index} className="hover:bg-slate-50/50 transition-colors">
+            <TableRow key={row.Year || index} className="hover:bg-slate-50/50 dark:hover:bg-slate-800/20 transition-colors border-b dark:border-slate-800">
               {headers.map((h) => {
                 const isNegativeNum = typeof row[h.key] === "number" && row[h.key] < 0;
                 return (
                   <TableCell 
                     key={h.key} 
-                    className={`${h.key === "Year" ? "font-semibold text-slate-700" : "text-right font-mono text-sm"} ${isNegativeNum ? "text-red-600 font-medium" : ""}`}
+                    className={`${h.key === "Year" ? "font-semibold text-slate-700 dark:text-slate-300" : "text-right font-mono text-sm dark:text-slate-300"} ${isNegativeNum ? "text-red-600 dark:text-red-400 font-medium" : ""}`}
                   >
                     {formatCellData(row[h.key], h.key)}
                   </TableCell>

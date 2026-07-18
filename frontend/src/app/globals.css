@@ -122,9 +122,29 @@
     @apply border-border outline-ring/50;
   }
   body {
-    @apply bg-background text-foreground;
+    @apply bg-background text-foreground transition-colors duration-300;
   }
   html {
     @apply font-sans;
   }
 }
+
+/* 🎬 VIEW TRANSITIONS CUSTOM STYLING (FOR SMOOTH THEME TOGGLE FADE) */
+::view-transition-old(root) {
+  animation: 250ms cubic-bezier(0.4, 0, 1, 1) both fade-out;
+}
+
+::view-transition-new(root) {
+  animation: 250ms cubic-bezier(0, 0, 0.2, 1) both fade-in;
+}
+
+@keyframes fade-out {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
