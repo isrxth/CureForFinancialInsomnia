@@ -36,6 +36,11 @@ class ExportExcelRequest(BaseModel):
     original_metrics: list[dict]
     analysis_results: list[dict]
 
+@app.get("/")
+def read_root():
+    """Health check endpoint for Render deployment."""
+    return {"status": "online", "service": "CureForFinancialInsomnia API"}
+
 @app.post("/api/parse-pdf")
 def parse_pdf_endpoint(file: UploadFile = File(...)):
     """
@@ -121,3 +126,8 @@ def export_excel_endpoint(request_data: ExportExcelRequest):
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+if __name__ == "__main__":
+    import uvicorn
+    port = int(os.getenv("PORT", 8000))
+    uvicorn.run("main:app", host="0.0.0.0", port=port)
