@@ -3,72 +3,193 @@ import time
 import re
 from unstract.llmwhisperer import LLMWhispererClientV2
 
-def extract_financial_dict_from_pdf(pdf_file_path: str) -> dict:
+def parse_number_from_token(token: str):
+    """
+    Parses numeric values from LLMWhisperer tokens, cleanly handling negative
+    numbers (-1,948,055 or (1,948,055)), percentages, and hyphens/placeholders.
+    Ignores year ranges like 2024-25 or 2025/26.
+    """
+    t = token.replace('−', '-').replace('–', '-').replace('—', '-')
+    
+    # Ignore year ranges (e.g. 2024-25 or 2025/26)
+    if re.match(r'^\d{4}[-/]\d{2,4}$', t):
+        return None
+        
+    is_negative = False
+    cleaned_t = t.strip()
+    if cleaned_t.startswith('(') and cleaned_t.endswith(')'):
+        is_negative = True
+    elif cleaned_t.startswith('-'):
+        is_negative = True
+        
+    cleaned = t.replace(',', '').replace('(', '').replace(')', '').replace('%', '').replace('$', '').replace('€', '').replace('£', '').replace('-', '').strip()
+    if cleaned.replace('.', '', 1).isdigit():
+        val = float(cleaned)
+        return -val if is_negative else val
+    elif cleaned == '' or cleaned.lower() in ['n/a', 'na', 'nil']:
+        return 0.0
+    return None
+
+def extract_raw_text_from_pdf(pdf_file_path: str) -> str:
     """
     Uploads a corporate report PDF to LLMWhisperer, polls until processed,
-    and runs a text regex loop to parse key baseline metrics.
+    and returns the layout-preserved raw result_text.
     """
-    # 1. Initialize client using the environment variable
     client = LLMWhispererClientV2(
         base_url='https://llmwhisperer-api.eu-west.unstract.com/api/v2',
         api_key=os.getenv('API_KEY')
     )
     
-    # 2. Submit the PDF for layout processing
     print("📤 Sending PDF bytes to Unstract API cloud...")
     result = client.whisper(file_path=pdf_file_path)
     print(f"✅ Received hash receipt: {result['whisper_hash']}")
     
-    # 3. Asynchronous status polling loop
     while True:
         status = client.whisper_status(whisper_hash=result['whisper_hash'])
         if status['status'] == 'processed':
             resultx = client.whisper_retrieve(whisper_hash=result['whisper_hash'])
             break
-        time.sleep(5)
+        time.sleep(3)
         
-    extracted_table = resultx['extraction']['result_text']
-    
-    # 4. Text-Line Regex Extraction Logic from your notebook
-    lines = extracted_table.strip().split('\n')
-    target_yrs = ["2025/26", "2024/25", "2023/24", "2022/23", "2021/22", "2020/21"]
-    data_store = {year: {} for year in target_yrs}
+    return resultx['extraction']['result_text']
 
-    hooks = {
-        "Revenue": "revenue",
-        "Profit/(Loss) before taxation": "pbt",
-        "Total equity": "total_equity",
-        "Total borrowings": "total_borrowings",
-        "Current assets": "current_assets",
-        "Total assets employed": "total_assets",
-        "Current ratio (No. of times)": "current_ratio",
-        "Quick asset ratio": "quick_ratio",
-        "Gearing ratio (%)": "gearing_ratio"
+def extract_candidates_from_text(raw_text: str):
+    """
+    Parses LLMWhisperer text to extract candidate years, candidate rows with line indices,
+    column index guide preview, and default metric mappings.
+    """
+    lines = raw_text.strip().split('\n')
+    
+    # Extract candidate years
+    year_pattern = re.compile(r'\b\d{4}(?:/\d{2,4}|-\d{2,4})?\b')
+    all_year_tokens = year_pattern.findall(raw_text)
+    
+    seen_years = set()
+    candidate_years = []
+    for yr in all_year_tokens:
+        if yr not in seen_years:
+            seen_years.add(yr)
+            candidate_years.append(yr)
+            
+    candidate_rows = []
+    guide_rows = []
+    
+    for i, line in enumerate(lines):
+        tokens = line.strip().split()
+        if not tokens:
+            continue
+        
+        nums = []
+        text_parts = []
+        for tok in tokens:
+            val = parse_number_from_token(tok)
+            if val is not None:
+                nums.append(val)
+            else:
+                text_parts.append(tok)
+                
+        if nums:
+            label = " ".join(text_parts).strip()
+            nums_preview = ", ".join(str(n) for n in nums[:3])
+            if len(nums) > 3:
+                nums_preview += "..."
+            
+            display_lbl = label if label else "[No Label]"
+            display_name = f"Row {i+1}: {display_lbl} | [{nums_preview}]"
+            
+            row_item = {
+                "display": display_name,
+                "line_idx": i,
+                "label": label,
+                "numbers_preview": [str(n) for n in nums[:6]]
+            }
+            candidate_rows.append(row_item)
+            
+            if len(guide_rows) < 4:
+                num_tokens = [t for t in tokens if parse_number_from_token(t) is not None]
+                guide_rows.append({
+                    "line_idx": i,
+                    "label": display_lbl,
+                    "columns": num_tokens[:8]
+                })
+
+    target_keys = {
+        "revenue": "Revenue",
+        "pbt": "Profit/(Loss) before taxation",
+        "total_equity": "Total equity",
+        "total_borrowings": "Total borrowings",
+        "current_assets": "Current assets",
+        "total_assets": "Total assets employed",
+        "current_ratio": "Current ratio (No. of times)",
+        "quick_ratio": "Quick asset ratio",
+        "gearing_ratio": "Gearing ratio (%)"
     }
 
-    for line in lines:
-        clean_line = " ".join(line.split())
-        for text_label, json_key in hooks.items():
-            if text_label == "Revenue" and "Revenue reserve" in clean_line:
-                continue
+    default_mappings = {}
+    for json_key, default_lbl in target_keys.items():
+        selected_line_idx = -1
+        for row in candidate_rows:
+            lbl = row['label']
+            if lbl and (default_lbl.lower() in lbl.lower() or lbl.lower() in default_lbl.lower()):
+                selected_line_idx = row['line_idx']
+                break
+                
+        if selected_line_idx == -1:
+            if json_key == "revenue":
+                for row in candidate_rows:
+                    lbl = row['label']
+                    if lbl and ("revenue" in lbl.lower() or "turnover" in lbl.lower() or "income" in lbl.lower()) and "reserve" not in lbl.lower():
+                        selected_line_idx = row['line_idx']
+                        break
+            elif json_key == "pbt":
+                for row in candidate_rows:
+                    lbl = row['label']
+                    if lbl and ("before taxation" in lbl.lower() or "before tax" in lbl.lower() or "pbt" in lbl.lower()):
+                        selected_line_idx = row['line_idx']
+                        break
+            elif json_key == "total_assets":
+                for row in candidate_rows:
+                    lbl = row['label']
+                    if lbl and ("total assets" in lbl.lower()):
+                        selected_line_idx = row['line_idx']
+                        break
 
-            if text_label in clean_line:
-                number_part = clean_line[len(text_label):].strip()
-                tokens = number_part.split()
+        default_mappings[json_key] = selected_line_idx
 
-                clean_numbers = []
-                for token in tokens:
-                    is_negative = '(' in token 
-                    cleaned = token.replace(',', '').replace('(', '').replace(')', '')
+    return candidate_years, candidate_rows, guide_rows, default_mappings
 
-                    if cleaned.replace('.', '', 1).isdigit():
-                        val = float(cleaned)
-                        if is_negative:
-                            val = -val
-                        clean_numbers.append(val)
+def parse_metrics_with_mappings(raw_text: str, target_yrs: list, col_indices: list, selected_mappings: dict) -> dict:
+    """
+    Parses numbers for mapped line indices and column indices across target years.
+    """
+    lines = raw_text.strip().split('\n')
+    data_store = {year: {} for year in target_yrs}
+    
+    if not col_indices:
+        col_indices = list(range(len(target_yrs)))
+        
+    for json_key, line_idx in selected_mappings.items():
+        if line_idx < 0 or line_idx >= len(lines):
+            continue
+        line = lines[line_idx]
+        tokens = line.strip().split()
+        
+        clean_numbers = []
+        for tok in tokens:
+            val = parse_number_from_token(tok)
+            if val is not None:
+                clean_numbers.append(val)
+                
+        for year_idx, year in enumerate(target_yrs):
+            if year_idx < len(col_indices):
+                target_col_idx = col_indices[year_idx]
+                if target_col_idx < len(clean_numbers):
+                    data_store[year][json_key] = clean_numbers[target_col_idx]
+                    
+    target_keys = ["revenue", "pbt", "total_equity", "total_borrowings", "current_assets", "total_assets", "current_ratio", "quick_ratio", "gearing_ratio"]
+    for year in data_store:
+        for k in target_keys:
+            if k not in data_store[year]:
+                data_store[year][k] = 0.0
 
-                for idx, year in enumerate(target_yrs):
-                    if idx < len(clean_numbers):
-                        data_store[year][json_key] = clean_numbers[idx]
-                        
     return data_store
