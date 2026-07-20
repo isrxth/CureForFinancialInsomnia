@@ -56,6 +56,8 @@ export default function AnalyticsDashboard() {
   const [originalData, setOriginalData] = useState<any[]>([]);
   const [analysisData, setAnalyzedData] = useState<any[]>([]);
 
+  const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
+
   // 1. STEP 1: Upload & Extract Layout Candidates
   const executePdfParse = async (selectedfile: File) => {
     if (selectedfile.type !== "application/pdf") {
@@ -71,7 +73,7 @@ export default function AnalyticsDashboard() {
     dataPayload.append("file", selectedfile);
 
     try {
-      const response = await fetch("http://127.0.0.1:8000/api/parse-pdf", {
+      const response = await fetch(`${API_BASE_URL}/api/parse-pdf`, {
         method: "POST",
         body: dataPayload,
       });
@@ -123,7 +125,7 @@ export default function AnalyticsDashboard() {
       .map((idx) => Number(idx));
 
     try {
-      const response = await fetch("http://127.0.0.1:8000/api/analyse", {
+      const response = await fetch(`${API_BASE_URL}/api/analyse`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -157,7 +159,7 @@ export default function AnalyticsDashboard() {
     setExporting(true);
     setError(null);
     try {
-      const response = await fetch("http://127.0.0.1:8000/api/export-excel", {
+      const response = await fetch(`${API_BASE_URL}/api/export-excel`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
