@@ -1,5 +1,6 @@
 import os
 import io
+from typing import Any
 import pandas as pd
 from fastapi import FastAPI, UploadFile, File, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -29,7 +30,7 @@ class AnalyseRequest(BaseModel):
     raw_text: str
     target_years: list[str]
     column_indices: list[int] = []
-    selected_mappings: dict[str, int]
+    selected_mappings: dict[str, Any]
 
 class ExportExcelRequest(BaseModel):
     filename: str = "Financial_Analysis.xlsx"
@@ -78,7 +79,7 @@ def parse_pdf_endpoint(file: UploadFile = File(...)):
 @app.post("/api/analyse")
 def analyze_endpoint(request_data: AnalyseRequest):
     """
-    Step 2: Take user-selected line mappings, target years, column indices, and raw_text,
+    Step 2: Take user-selected line mappings (or formula payloads), target years, column indices, and raw_text,
     parse the financial dictionary, and run the analytical calculations pipeline.
     """
     try:

@@ -161,6 +161,8 @@ def extract_candidates_from_text(raw_text: str):
 def parse_metrics_with_mappings(raw_text: str, target_yrs: list, col_indices: list, selected_mappings: dict) -> dict:
     """
     Parses numbers for mapped line indices and column indices across target years.
+    Supports direct line indices (int) and multi-row formulas:
+    { "type": "formula", "terms": [ { "op": "+", "line_idx": 10 }, { "op": "+", "line_idx": 11 } ] }
     """
     lines = raw_text.strip().split('\n')
     data_store = {year: {} for year in target_yrs}
@@ -168,24 +170,45 @@ def parse_metrics_with_mappings(raw_text: str, target_yrs: list, col_indices: li
     if not col_indices:
         col_indices = list(range(len(target_yrs)))
         
-    for json_key, line_idx in selected_mappings.items():
+    def get_line_numbers(line_idx):
         if line_idx < 0 or line_idx >= len(lines):
-            continue
-        line = lines[line_idx]
-        tokens = line.strip().split()
-        
-        clean_numbers = []
-        for tok in tokens:
-            val = parse_number_from_token(tok)
-            if val is not None:
-                clean_numbers.append(val)
-                
-        for year_idx, year in enumerate(target_yrs):
-            if year_idx < len(col_indices):
-                target_col_idx = col_indices[year_idx]
-                if target_col_idx < len(clean_numbers):
-                    data_store[year][json_key] = clean_numbers[target_col_idx]
-                    
+            return []
+        tokens = lines[line_idx].strip().split()
+        return [parse_number_from_token(tok) for tok in tokens if parse_number_from_token(tok) is not None]
+
+    for json_key, mapping in selected_mappings.items():
+        if isinstance(mapping, (int, float)):
+            line_idx = int(mapping)
+            if line_idx < 0 or line_idx >= len(lines):
+                continue
+            clean_numbers = get_line_numbers(line_idx)
+            for year_idx, year in enumerate(target_yrs):
+                if year_idx < len(col_indices):
+                    target_col_idx = col_indices[year_idx]
+                    if target_col_idx < len(clean_numbers):
+                        data_store[year][json_key] = clean_numbers[target_col_idx]
+
+        elif isinstance(mapping, dict) and mapping.get("type") == "formula":
+            terms = mapping.get("terms", [])
+            for year_idx, year in enumerate(target_yrs):
+                if year_idx < len(col_indices):
+                    target_col_idx = col_indices[year_idx]
+                    tot_val = 0.0
+                    has_valid = False
+                    for idx_t, term in enumerate(terms):
+                        line_idx = term.get("line_idx", -1)
+                        op = "+" if idx_t == 0 else term.get("op", "+")
+                        if line_idx >= 0 and line_idx < len(lines):
+                            nums = get_line_numbers(line_idx)
+                            val = nums[target_col_idx] if target_col_idx < len(nums) else 0.0
+                            if op == "+":
+                                tot_val += val
+                            else:
+                                tot_val -= val
+                            has_valid = True
+                    if has_valid:
+                        data_store[year][json_key] = tot_val
+
     target_keys = ["revenue", "pbt", "total_equity", "total_borrowings", "current_assets", "total_assets", "current_ratio", "quick_ratio", "gearing_ratio"]
     for year in data_store:
         for k in target_keys:

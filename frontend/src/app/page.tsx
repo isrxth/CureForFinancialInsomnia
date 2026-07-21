@@ -5,6 +5,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
 import { FileUploader } from "@/components/file-uploader";
 import { MetricTable } from "@/components/metric-table";
 import { ThemeToggle } from "@/components/theme-toggle";
@@ -20,6 +21,17 @@ interface GuideRow {
   line_idx: number;
   label: string;
   columns: string[];
+}
+
+interface FormulaTerm {
+  op: "+" | "-";
+  line_idx: number;
+}
+
+interface MetricState {
+  mode: "direct" | "formula";
+  direct_line_idx: number;
+  formula_terms: FormulaTerm[];
 }
 
 const TARGET_KEYS_CONFIG = [
@@ -50,11 +62,12 @@ export default function AnalyticsDashboard() {
   // Interactive User Selections
   const [targetYearsInput, setTargetYearsInput] = useState<string>("");
   const [columnIndicesInput, setColumnIndicesInput] = useState<string>("");
-  const [selectedMappings, setSelectedMappings] = useState<Record<string, number>>({});
+  const [metricStates, setMetricStates] = useState<Record<string, MetricState>>({});
 
   // Final Results
   const [originalData, setOriginalData] = useState<any[]>([]);
   const [analysisData, setAnalyzedData] = useState<any[]>([]);
+  const [exporting, setExporting] = useState<boolean>(false);
 
   const API_BASE_URL = (process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000").replace(/\/$/, "");
 
@@ -89,10 +102,23 @@ export default function AnalyticsDashboard() {
       setCandidateRows(result.candidate_rows || []);
       setGuideRows(result.guide_rows || []);
 
-      // Pre-fill user inputs
       setTargetYearsInput((result.candidate_years || []).slice(0, 6).join(", "));
-      setColumnIndicesInput(""); // Default blank
-      setSelectedMappings(result.default_mappings || {});
+      setColumnIndicesInput("");
+
+      // Initialize metric states
+      const initialStates: Record<string, MetricState> = {};
+      const defMap = result.default_mappings || {};
+      TARGET_KEYS_CONFIG.forEach((cfg) => {
+        initialStates[cfg.key] = {
+          mode: "direct",
+          direct_line_idx: defMap[cfg.key] ?? -1,
+          formula_terms: [
+            { op: "+", line_idx: -1 },
+            { op: "+", line_idx: -1 },
+          ],
+        };
+      });
+      setMetricStates(initialStates);
 
       setWorkflowStep("mapping");
     } catch (err: any) {
@@ -124,6 +150,19 @@ export default function AnalyticsDashboard() {
       .filter((idx) => idx.length > 0 && !isNaN(Number(idx)))
       .map((idx) => Number(idx));
 
+    // Construct selected_mappings payload supporting both direct & formula types
+    const selectedMappingsPayload: Record<string, any> = {};
+    Object.entries(metricStates).forEach(([key, state]) => {
+      if (state.mode === "direct") {
+        selectedMappingsPayload[key] = state.direct_line_idx;
+      } else {
+        selectedMappingsPayload[key] = {
+          type: "formula",
+          terms: state.formula_terms.filter((t) => t.line_idx !== -1),
+        };
+      }
+    });
+
     try {
       const response = await fetch(`${API_BASE_URL}/api/analyse`, {
         method: "POST",
@@ -132,7 +171,7 @@ export default function AnalyticsDashboard() {
           raw_text: rawText,
           target_years: targetYears,
           column_indices: colIndices,
-          selected_mappings: selectedMappings,
+          selected_mappings: selectedMappingsPayload,
         }),
       });
 
@@ -152,9 +191,7 @@ export default function AnalyticsDashboard() {
     }
   };
 
-  // Export State
-  const [exporting, setExporting] = useState<boolean>(false);
-
+  // Export Spreadsheet
   const exportExcelSpreadsheet = async () => {
     setExporting(true);
     setError(null);
@@ -186,6 +223,42 @@ export default function AnalyticsDashboard() {
       setError(err.message || "Failed to download Excel spreadsheet.");
     } finally {
       setExporting(false);
+    }
+  };
+
+  // Helper: Live Formula Preview Calculation
+  const getLivePreview = (state: MetricState): string | null => {
+    if (!state) return null;
+
+    if (state.mode === "direct") {
+      if (state.direct_line_idx === -1) return null;
+      const row = candidateRows.find((r) => r.line_idx === state.direct_line_idx);
+      return row ? row.numbers_preview.slice(0, 3).join(", ") : null;
+    } else {
+      const validTerms = state.formula_terms.filter((t) => t.line_idx !== -1);
+      if (validTerms.length === 0) return null;
+
+      const totals = [0, 0, 0];
+      let hasNumbers = false;
+
+      validTerms.forEach((t, termIdx) => {
+        const row = candidateRows.find((r) => r.line_idx === t.line_idx);
+        if (row && row.numbers_preview) {
+          hasNumbers = true;
+          row.numbers_preview.slice(0, 3).forEach((nStr, cIdx) => {
+            const num = parseFloat(nStr.replace(/,/g, "")) || 0;
+            const op = termIdx === 0 ? "+" : t.op;
+            if (op === "+") {
+              totals[cIdx] += num;
+            } else {
+              totals[cIdx] -= num;
+            }
+          });
+        }
+      });
+
+      if (!hasNumbers) return null;
+      return totals.map((n) => n.toLocaleString("en-US")).join(", ");
     }
   };
 
@@ -237,7 +310,7 @@ export default function AnalyticsDashboard() {
             <span className="text-xl font-extrabold tracking-tight bg-gradient-to-r from-indigo-600 to-violet-600 dark:from-indigo-400 dark:to-violet-400 bg-clip-text text-transparent">
               CureForFinancialInsomnia
             </span>
-            <Badge variant="outline" className="text-[10px] px-1.5 py-0 font-mono text-slate-500 dark:text-slate-400 dark:border-slate-800">v2.0 Interactive</Badge>
+            <Badge variant="outline" className="text-[10px] px-1.5 py-0 font-mono text-slate-500 dark:text-slate-400 dark:border-slate-800">v2.0 Multi-Row</Badge>
           </div>
           
           <div className="flex items-center space-x-4">
@@ -273,7 +346,7 @@ export default function AnalyticsDashboard() {
           <div className="max-w-5xl mx-auto px-6 py-20 text-center space-y-8 animate-in fade-in duration-300">
             <div className="inline-flex items-center gap-2 rounded-full border bg-white dark:bg-slate-900 px-3 py-1 text-xs shadow-sm text-slate-600 dark:text-slate-300 dark:border-slate-800">
               <span className="flex h-2 w-2 rounded-full bg-indigo-600 dark:bg-indigo-400 animate-pulse" />
-              Next-Gen Layout-Agnostic Corporate Diagnostics Engine
+              Next-Gen Dynamic Multi-Row Corporate Diagnostics Engine
             </div>
             
             <h1 className="text-5xl md:text-6xl font-extrabold tracking-tight text-slate-950 dark:text-slate-50 max-w-3xl mx-auto leading-tight">
@@ -284,7 +357,7 @@ export default function AnalyticsDashboard() {
             </h1>
             
             <p className="text-lg text-slate-600 dark:text-slate-300 max-w-2xl mx-auto leading-relaxed">
-              Upload complex financial statement PDFs. Interactively map rows and column structures to handle any layout shifts or nameless totals effortlessly.
+              Upload complex financial statement PDFs. Derive unlabelled totals using multi-row formula calculations, preview live sums, and export reports directly to Excel.
             </p>
             
             <div className="flex items-center justify-center gap-4 pt-4">
@@ -306,9 +379,9 @@ export default function AnalyticsDashboard() {
               <div className="flex items-center justify-between">
                 <div>
                   <h1 className="text-3xl font-bold tracking-tight text-slate-950 dark:text-slate-50">Financial Analytics Workspace</h1>
-                  <p className="text-slate-500 dark:text-slate-400 text-sm">Industrial-grade tool with dynamic row & column mapping controls.</p>
+                  <p className="text-slate-500 dark:text-slate-400 text-sm">Industrial-grade tool with dynamic multi-row formula calculations.</p>
                 </div>
-                {workflowStep !== "upload" && (
+                {workflowStep !== "upload" && !loading && (
                   <Button 
                     variant="outline" 
                     size="sm" 
@@ -328,8 +401,42 @@ export default function AnalyticsDashboard() {
               </div>
             )}
 
+            {/* ⏳ SKELETON LOADING STATE DURING PARSING OR ANALYSIS */}
+            {loading && (
+              <div className="space-y-6 animate-in fade-in duration-200">
+                <div className="p-4 rounded-xl border bg-white dark:bg-slate-900 dark:border-slate-800 space-y-3">
+                  <div className="flex items-center gap-3">
+                    <Skeleton className="h-5 w-5 rounded-full" />
+                    <Skeleton className="h-6 w-64" />
+                  </div>
+                  <Skeleton className="h-4 w-96" />
+                </div>
+
+                <Card className="bg-white dark:bg-slate-900 border dark:border-slate-800">
+                  <CardHeader className="space-y-2">
+                    <Skeleton className="h-7 w-72" />
+                    <Skeleton className="h-4 w-full max-w-lg" />
+                  </CardHeader>
+                  <CardContent className="space-y-4">
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      {[1, 2, 3, 4, 5, 6].map((i) => (
+                        <div key={i} className="p-4 rounded-lg border dark:border-slate-800 space-y-3">
+                          <div className="flex justify-between">
+                            <Skeleton className="h-5 w-32" />
+                            <Skeleton className="h-4 w-16" />
+                          </div>
+                          <Skeleton className="h-9 w-full rounded-md" />
+                          <Skeleton className="h-3 w-48" />
+                        </div>
+                      ))}
+                    </div>
+                  </CardContent>
+                </Card>
+              </div>
+            )}
+
             {/* STEP 1: FILE UPLOAD */}
-            {workflowStep === "upload" && (
+            {!loading && workflowStep === "upload" && (
               <FileUploader 
                 onUpload={executePdfParse} 
                 loading={loading} 
@@ -339,7 +446,7 @@ export default function AnalyticsDashboard() {
             )}
 
             {/* STEP 2: INTERACTIVE MAPPING PANEL */}
-            {workflowStep === "mapping" && (
+            {!loading && workflowStep === "mapping" && (
               <div className="space-y-6 animate-in fade-in duration-200">
                 
                 {/* 📋 COLUMN INDEX GUIDE */}
@@ -389,7 +496,7 @@ export default function AnalyticsDashboard() {
                       Configure Structural Parameters & Metrics Mapping
                     </CardTitle>
                     <CardDescription className="text-slate-500 dark:text-slate-400">
-                      Map each financial hook to its corresponding line in the PDF table. Rows without explicit labels can be identified by their row number and values preview.
+                      Map each financial hook to a single row or build multi-row formulas to calculate unlabelled totals (e.g. Non-current + Current assets).
                     </CardDescription>
                   </CardHeader>
                   <CardContent className="space-y-6">
@@ -425,34 +532,181 @@ export default function AnalyticsDashboard() {
                       </div>
                     </div>
 
-                    {/* 9 Metric Select Controls */}
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                      {TARGET_KEYS_CONFIG.map((cfg) => (
-                        <div key={cfg.key} className="p-3 rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 space-y-1.5">
-                          <div className="flex items-center justify-between">
-                            <label className="text-xs font-bold text-slate-800 dark:text-slate-200">
-                              {cfg.label}
-                            </label>
-                            <span className="text-[10px] text-slate-400 dark:text-slate-500 font-mono">{cfg.key}</span>
+                    {/* 9 Metric Cards Grid with Dynamic Multi-Row Formula Adder & Live Previews */}
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                      {TARGET_KEYS_CONFIG.map((cfg) => {
+                        const mState = metricStates[cfg.key] || {
+                          mode: "direct",
+                          direct_line_idx: -1,
+                          formula_terms: [
+                            { op: "+", line_idx: -1 },
+                            { op: "+", line_idx: -1 },
+                          ],
+                        };
+
+                        const livePreview = getLivePreview(mState);
+
+                        return (
+                          <div key={cfg.key} className="p-4 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 space-y-3 shadow-sm hover:border-slate-300 dark:hover:border-slate-700 transition-all">
+                            <div className="flex items-center justify-between">
+                              <div>
+                                <h3 className="text-sm font-bold text-slate-900 dark:text-slate-100">{cfg.label}</h3>
+                                <p className="text-[11px] text-slate-500 dark:text-slate-400">{cfg.description}</p>
+                              </div>
+                              <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400">{cfg.key}</span>
+                            </div>
+
+                            {/* Mode Switcher */}
+                            <div className="flex bg-slate-100 dark:bg-slate-800 p-1 rounded-lg gap-1">
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setMetricStates((prev) => ({
+                                    ...prev,
+                                    [cfg.key]: { ...mState, mode: "direct" },
+                                  }))
+                                }
+                                className={`flex-1 text-xs py-1 font-semibold rounded-md transition-all cursor-pointer ${
+                                  mState.mode === "direct"
+                                    ? "bg-white dark:bg-slate-950 text-indigo-600 dark:text-indigo-400 shadow-sm"
+                                    : "text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200"
+                                }`}
+                              >
+                                Direct Row
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setMetricStates((prev) => ({
+                                    ...prev,
+                                    [cfg.key]: { ...mState, mode: "formula" },
+                                  }))
+                                }
+                                className={`flex-1 text-xs py-1 font-semibold rounded-md transition-all cursor-pointer ${
+                                  mState.mode === "formula"
+                                    ? "bg-white dark:bg-slate-950 text-indigo-600 dark:text-indigo-400 shadow-sm"
+                                    : "text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200"
+                                }`}
+                              >
+                                Dynamic Formula (Row Calculation)
+                              </button>
+                            </div>
+
+                            {/* MODE A: Direct Row Selector */}
+                            {mState.mode === "direct" ? (
+                              <select
+                                value={mState.direct_line_idx}
+                                onChange={(e) => {
+                                  const val = Number(e.target.value);
+                                  setMetricStates((prev) => ({
+                                    ...prev,
+                                    [cfg.key]: { ...mState, direct_line_idx: val },
+                                  }));
+                                }}
+                                className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-800 rounded-md px-3 py-2 text-xs font-mono text-slate-800 dark:text-slate-200 focus:ring-2 focus:ring-indigo-500 outline-none cursor-pointer"
+                              >
+                                <option value={-1}>-- Select Unmapped Row --</option>
+                                {candidateRows.map((r) => (
+                                  <option key={r.line_idx} value={r.line_idx}>
+                                    {r.display}
+                                  </option>
+                                ))}
+                              </select>
+                            ) : (
+                              /* MODE B: Multi-Term Formula Builder */
+                              <div className="space-y-2 border-t dark:border-slate-800 pt-2">
+                                {mState.formula_terms.map((term, tIdx) => (
+                                  <div key={tIdx} className="flex items-center gap-2">
+                                    {tIdx === 0 ? (
+                                      <span className="text-xs font-bold text-slate-500 font-mono w-10 text-center">Row 1:</span>
+                                    ) : (
+                                      <select
+                                        value={term.op}
+                                        onChange={(e) => {
+                                          const op = e.target.value as "+" | "-";
+                                          const newTerms = [...mState.formula_terms];
+                                          newTerms[tIdx] = { ...newTerms[tIdx], op };
+                                          setMetricStates((prev) => ({
+                                            ...prev,
+                                            [cfg.key]: { ...mState, formula_terms: newTerms },
+                                          }));
+                                        }}
+                                        className="w-10 bg-slate-100 dark:bg-slate-800 border dark:border-slate-700 rounded text-xs font-bold font-mono text-center py-1.5 focus:ring-2 focus:ring-indigo-500 outline-none cursor-pointer"
+                                      >
+                                        <option value="+">+</option>
+                                        <option value="-">-</option>
+                                      </select>
+                                    )}
+
+                                    <select
+                                      value={term.line_idx}
+                                      onChange={(e) => {
+                                        const line_idx = Number(e.target.value);
+                                        const newTerms = [...mState.formula_terms];
+                                        newTerms[tIdx] = { ...newTerms[tIdx], line_idx };
+                                        setMetricStates((prev) => ({
+                                          ...prev,
+                                          [cfg.key]: { ...mState, formula_terms: newTerms },
+                                        }));
+                                      }}
+                                      className="flex-1 bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-800 rounded-md px-2 py-1.5 text-xs font-mono text-slate-800 dark:text-slate-200 focus:ring-2 focus:ring-indigo-500 outline-none cursor-pointer"
+                                    >
+                                      <option value={-1}>-- Select Row --</option>
+                                      {candidateRows.map((r) => (
+                                        <option key={r.line_idx} value={r.line_idx}>
+                                          {r.display}
+                                        </option>
+                                      ))}
+                                    </select>
+
+                                    {tIdx > 0 && (
+                                      <button
+                                        type="button"
+                                        title="Remove term"
+                                        onClick={() => {
+                                          const newTerms = mState.formula_terms.filter((_, idx) => idx !== tIdx);
+                                          setMetricStates((prev) => ({
+                                            ...prev,
+                                            [cfg.key]: { ...mState, formula_terms: newTerms },
+                                          }));
+                                        }}
+                                        className="p-1 text-xs text-red-500 hover:text-red-700 hover:bg-red-50 dark:hover:bg-red-950/50 rounded transition-colors cursor-pointer"
+                                      >
+                                        ❌
+                                      </button>
+                                    )}
+                                  </div>
+                                ))}
+
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  size="sm"
+                                  onClick={() => {
+                                    const newTerms = [...mState.formula_terms, { op: "+" as const, line_idx: -1 }];
+                                    setMetricStates((prev) => ({
+                                      ...prev,
+                                      [cfg.key]: { ...mState, formula_terms: newTerms },
+                                    }));
+                                  }}
+                                  className="w-full text-xs border-dashed text-indigo-600 border-indigo-300 dark:text-indigo-400 dark:border-indigo-800 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 mt-1"
+                                >
+                                  + Add Row Term
+                                </Button>
+                              </div>
+                            )}
+
+                            {/* ✨ LIVE CALCULATED PREVIEW BADGE */}
+                            {livePreview && (
+                              <div className="pt-1 flex items-center gap-1.5 text-[11px] font-mono text-indigo-700 dark:text-indigo-300 bg-indigo-50/70 dark:bg-indigo-950/40 px-2.5 py-1 rounded-md border border-indigo-200/60 dark:border-indigo-800/60">
+                                <span>✨</span>
+                                <span className="font-semibold">{mState.mode === "formula" ? "Live Formula Result:" : "Values Preview:"}</span>
+                                <span className="truncate font-bold">{livePreview}</span>
+                              </div>
+                            )}
                           </div>
-                          <select
-                            value={selectedMappings[cfg.key] ?? -1}
-                            onChange={(e) => {
-                              const val = Number(e.target.value);
-                              setSelectedMappings((prev) => ({ ...prev, [cfg.key]: val }));
-                            }}
-                            className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-800 rounded-md px-3 py-1.5 text-xs font-mono text-slate-800 dark:text-slate-200 focus:ring-2 focus:ring-indigo-500 outline-none cursor-pointer"
-                          >
-                            <option value={-1}>-- Select Unmapped Row --</option>
-                            {candidateRows.map((r) => (
-                              <option key={r.line_idx} value={r.line_idx}>
-                                {r.display}
-                              </option>
-                            ))}
-                          </select>
-                          <p className="text-[10px] text-slate-500 dark:text-slate-400">{cfg.description}</p>
-                        </div>
-                      ))}
+                        );
+                      })}
                     </div>
 
                     <div className="flex justify-end gap-3 pt-4 border-t dark:border-slate-800">
@@ -478,7 +732,7 @@ export default function AnalyticsDashboard() {
             )}
 
             {/* STEP 3: RESULTS REPORT DASHBOARD */}
-            {workflowStep === "results" && originalData.length > 0 && (
+            {!loading && workflowStep === "results" && originalData.length > 0 && (
               <div className="space-y-6 animate-in fade-in-50 duration-200">
                 
                 <div className="flex items-center justify-between bg-white dark:bg-slate-900 p-4 rounded-xl border dark:border-slate-800 shadow-sm">
