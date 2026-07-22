@@ -56,6 +56,11 @@ def parse_pdf_endpoint(file: UploadFile = File(...)):
         buffer.write(file.file.read())
 
     try:
+        from pypdf import PdfReader
+        reader = PdfReader(temp_path)
+        if len(reader.pages) > 1:
+            raise HTTPException(status_code=400, detail="Only single-page PDF uploads are supported. Please upload a 1-page document.")
+
         raw_text = extract_raw_text_from_pdf(temp_path)
         candidate_years, candidate_rows, guide_rows, default_mappings = extract_candidates_from_text(raw_text)
 
