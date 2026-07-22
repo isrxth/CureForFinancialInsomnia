@@ -48,6 +48,20 @@ def parse_pdf_endpoint(file: UploadFile = File(...)):
     Step 1: Upload PDF, parse layout with LLMWhisperer, and return candidate rows,
     candidate years, column guides, default mappings, and raw_text for interactive configuration.
     """
+    # 1. Enforce file size limit (5MB max)
+    MAX_SIZE = 5 * 1024 * 1024
+    file.file.seek(0, 2)
+    file_size = file.file.tell()
+    file.file.seek(0)
+    if file_size > MAX_SIZE:
+        raise HTTPException(status_code=400, detail="Security Warning: File exceeds the maximum allowed size of 5MB.")
+
+    # 2. Verify PDF Magic Bytes Signature (%PDF)
+    header = file.file.read(4)
+    file.file.seek(0)
+    if header != b"%PDF":
+        raise HTTPException(status_code=400, detail="Security Warning: File signature mismatch. The file is not a valid PDF.")
+
     if not file.filename.endswith('.pdf'):
         raise HTTPException(status_code=400, detail="Invalid file type. Please upload a PDF file.")
 
@@ -58,6 +72,11 @@ def parse_pdf_endpoint(file: UploadFile = File(...)):
     try:
         from pypdf import PdfReader
         reader = PdfReader(temp_path)
+        
+        # 3. Reject PDFs with embedded files/attachments
+        if reader.attachments:
+            raise HTTPException(status_code=400, detail="Security Warning: PDF contains embedded attachments. Upload blocked.")
+
         if len(reader.pages) > 1:
             raise HTTPException(status_code=400, detail="Only single-page PDF uploads are supported. Please upload a 1-page document.")
 
